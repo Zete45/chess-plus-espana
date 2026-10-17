@@ -5,13 +5,17 @@ import { supabase } from "@/lib/supabase";
 export default function Home() {
   const [torneos, setTorneos] = useState([]);
   const [cargando, setCargando] = useState(true);
-  const [buscandoFide, setBuscandoFide] = useState(false);
   const [filtroRitmo, setFiltroRitmo] = useState("Todos");
   const [busqueda, setBusqueda] = useState("");
   const [mostrarModalNuevo, setMostrarModalNuevo] = useState(false);
 
   // Estados para Editar Torneo
   const [torneoAEditar, setTorneoAEditar] = useState(null);
+
+  // Estados para el CSV de jugadores y selector "¿Quién eres?"
+  const [listaJugadoresCSV, setListaJugadoresCSV] = useState([]);
+  const [mostrarSelectorJugador, setMostrarSelectorJugador] = useState(false);
+  const [busquedaJugadorCSV, setBusquedaJugadorCSV] = useState("");
 
   const [inscritosPorTorneo, setInscritosPorTorneo] = useState({});
   const [torneoExpandido, setTorneoExpandido] = useState(null);
@@ -28,30 +32,113 @@ export default function Home() {
   });
 
   const [jugador, setJugador] = useState({
-    nombre: "Erlantz Caballero Acosta",
-    fideId: "24536954",
-    email: "erlantz@ajedrez.es",
-    eloStd: 1950,
-    eloRapid: 1950,
-    eloBlitz: 1950,
+    nombre: "Selecciona tu jugador",
+    fideId: "000000",
+    email: "jugador@ajedrez.es",
+    eloPortugalujo: 1500,
   });
 
-  const [inputFideId, setInputFideId] = useState("24536954");
   const [misInscripciones, setMisInscripciones] = useState([]);
-  const [editandoPerfil, setEditandoPerfil] = useState(false);
 
+  // 1. Al arrancar: Cargar jugador guardado y leer el archivo /jugadores.csv
   useEffect(() => {
+    cargarCSVJugadores();
+
     const guardado = localStorage.getItem("chess_plus_jugador");
     if (guardado) {
       const parsed = JSON.parse(guardado);
-      setJugador(parsed);
-      setInputFideId(parsed.fideId);
+      setJugador({
+        ...parsed,
+        eloPortugalujo: parsed.eloPortugalujo || parsed.eloRapid || parsed.eloStd || 1500,
+      });
+    } else {
+      // Si no hay jugador guardado en el navegador, abrimos el selector "¿Quién eres?"
+      setMostrarSelectorJugador(true);
     }
   }, []);
 
   useEffect(() => {
     cargarDatos();
   }, [jugador.fideId]);
+
+  // Función que lee y procesa el archivo public/jugadores.csv automáticamente
+  async function cargarCSVJugadores() {
+    try {
+      const res = await fetch("/jugadores.csv", { cache: "no-store" });
+      if (!res.ok) return;
+      const texto = await res.text();
+      const lineas = texto.split(/\r?\n/).filter((l) => l.trim() !== "");
+      if (lineas.length < 2) return;
+
+      const separador = lineas[0].includes(";") ? ";" : ",";
+      const cabeceras = lineas[0]
+        .split(separador)
+        .map((h) => h.replace(/"/g, "").trim().toLowerCase());
+
+      let idxNombre = cabeceras.findIndex((h) =>
+        h.includes("nombre") || h.includes("jugador") || h.includes("name") || h.includes("apellido")
+      );
+      let idxElo = cabeceras.findIndex((h) =>
+        h.includes("elo") || h.includes("actual") || h.includes("nuevo") || h.includes("rat") || h.includes("ptos")
+      );
+      let idxFide = cabeceras.findIndex((h) =>
+        h.includes("fide") || h.includes("id") || h.includes("cod") || h.includes("licencia")
+      );
+
+      const jugadoresExtraidos = [];
+
+      for (let i = 1; i < lineas.length; i++) {
+        const cols = lineas[i]
+          .split(new RegExp(`${separador}(?=(?:(?:[^"]*"){2})*[^"]*$)`))
+          .map((c) => c.replace(/^"|"$/g, "").trim());
+
+        if (cols.length < 2) continue;
+
+        let nombre = idxNombre !== -1 ? cols[idxNombre] : "";
+        let elo = idxElo !== -1 ? parseInt(cols[idxElo], 10) : NaN;
+        let fide = idxFide !== -1 ? cols[idxFide] : "";
+
+        if (!nombre) {
+          const colTexto = cols.find((c) => /[a-zA-ZÁÉÍÓÚáéíóúñÑ]{3,}/.test(c));
+          nombre = colTexto || cols[1] || cols[0];
+        }
+
+        if (isNaN(elo)) {
+          const colNum = cols.find((c) => /^\d{3,4}$/.test(c) && parseInt(c, 10) >= 800 && parseInt(c, 10) <= 3000);
+          elo = colNum ? parseInt(colNum, 10) : 1500;
+        }
+
+        if (!fide || fide === nombre) {
+          fide = cols[0] && /^\d+$/.test(cols[0]) ? `PORTU-${cols[0]}` : `CLUB-${i}`;
+        }
+
+        if (nombre && !nombre.toLowerCase().includes("jugador") && !nombre.toLowerCase().includes("nombre")) {
+          jugadoresExtraidos.push({
+            nombre,
+            fideId: fide,
+            eloPortugalujo: elo,
+          });
+        }
+      }
+
+      setListaJugadoresCSV(jugadoresExtraidos);
+    } catch (err) {
+      console.error("No se pudo cargar /jugadores.csv:", err);
+    }
+  }
+
+  // Seleccionar un jugador de la lista del CSV
+  function elegirJugadorDeLista(jug) {
+    const nuevoPerfil = {
+      nombre: jug.nombre,
+      fideId: String(jug.fideId),
+      email: jugador.email || "jugador@ajedrez.es",
+      eloPortugalujo: jug.eloPortugalujo,
+    };
+    setJugador(nuevoPerfil);
+    localStorage.setItem("chess_plus_jugador", JSON.stringify(nuevoPerfil));
+    setMostrarSelectorJugador(false);
+  }
 
   async function cargarDatos() {
     setCargando(true);
@@ -85,41 +172,6 @@ export default function Home() {
     setCargando(false);
   }
 
-  async function vincularFideId() {
-    if (!inputFideId.trim()) return;
-    setBuscandoFide(true);
-    try {
-      const res = await fetch("/api/fide?id=" + inputFideId.trim());
-      const data = await res.json();
-
-      if (data.ok) {
-        const nuevoPerfil = {
-          ...jugador,
-          fideId: data.jugador.fideId,
-          nombre: data.jugador.nombre,
-          eloStd: data.jugador.eloStd || jugador.eloStd,
-          eloRapid: data.jugador.eloRapid || jugador.eloRapid,
-          eloBlitz: data.jugador.eloBlitz || jugador.eloBlitz,
-        };
-        setJugador(nuevoPerfil);
-        localStorage.setItem("chess_plus_jugador", JSON.stringify(nuevoPerfil));
-        setEditandoPerfil(false);
-      } else {
-        alert("No se encontró ese código en la FIDE.");
-      }
-    } catch (e) {
-      alert("Error al conectar con la FIDE.");
-    }
-    setBuscandoFide(false);
-  }
-
-  function guardarElosManuales(e) {
-    e.preventDefault();
-    localStorage.setItem("chess_plus_jugador", JSON.stringify(jugador));
-    setEditandoPerfil(false);
-    alert("¡Datos y ELOs guardados correctamente!");
-  }
-
   async function crearTorneoManual(e) {
     e.preventDefault();
     const { error } = await supabase.from("tournaments").insert([{
@@ -140,7 +192,6 @@ export default function Home() {
     }
   }
 
-  // FUNCIÓN PARA ACTUALIZAR TORNEO EXISTENTE
   async function actualizarTorneo(e) {
     e.preventDefault();
     const { error } = await supabase
@@ -164,7 +215,6 @@ export default function Home() {
     }
   }
 
-  // FUNCIÓN PARA BORRAR TORNEO
   async function borrarTorneo(id) {
     if (confirm("¿Estás seguro de que quieres eliminar este torneo? Se borrarán también las inscripciones asociadas.")) {
       const { error } = await supabase.from("tournaments").delete().eq("id", id);
@@ -178,6 +228,11 @@ export default function Home() {
   }
 
   async function toggleInscripcion(torneo) {
+    if (jugador.nombre === "Selecciona tu jugador") {
+      setMostrarSelectorJugador(true);
+      return;
+    }
+
     const estaInscrito = misInscripciones.includes(torneo.id);
 
     if (estaInscrito) {
@@ -194,15 +249,13 @@ export default function Home() {
 
       cargarDatos();
     } else {
-      const eloAUsar = torneo.ritmo === 'Blitz' ? jugador.eloBlitz : torneo.ritmo === 'Rápido' ? jugador.eloRapid : jugador.eloStd;
-      
       const { error } = await supabase.from("registrations").insert([
         {
           tournament_id: torneo.id,
           jugador_nombre: jugador.nombre,
           fide_id: jugador.fideId,
           email: jugador.email,
-          elo: eloAUsar,
+          elo: jugador.eloPortugalujo,
         },
       ]);
 
@@ -226,130 +279,126 @@ export default function Home() {
     return coincideRitmo && coincideTexto;
   });
 
+  const jugadoresCSVFiltrados = listaJugadoresCSV.filter((j) =>
+    j.nombre.toLowerCase().includes(busquedaJugadorCSV.toLowerCase()) ||
+    String(j.fideId).toLowerCase().includes(busquedaJugadorCSV.toLowerCase())
+  );
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-16">
-      {/* CABECERA CARNET FIDE */}
-      <header className="bg-gradient-to-b from-indigo-950 to-slate-900 p-5 border-b border-slate-800 sticky top-0 z-10 shadow-xl">
+      {/* CABECERA CARNET */}
+      <header className="bg-gradient-to-b from-indigo-950 via-slate-900 to-slate-950 p-5 border-b border-amber-500/20 sticky top-0 z-10 shadow-2xl">
         <div className="max-w-xl mx-auto">
-         <div className="flex justify-between items-center mb-4">
+          <div className="flex justify-between items-center mb-4">
             <div className="flex items-center gap-3">
-              <img 
-                src="/logo.jpg" 
-                alt="Logo Ajedrez" 
-                className="w-10 h-10 rounded-full object-cover border-2 border-amber-400 shadow-md bg-white p-0.5" 
-              />
-              <h1 className="text-xl font-black tracking-wider text-amber-400">
-                ♟️ TORNEOS AJEDREZ
-              </h1>
+              <div className="w-11 h-11 rounded-full bg-white p-0.5 border-2 border-amber-400 shadow-lg shadow-amber-500/20 flex items-center justify-center overflow-hidden">
+                <img
+                  src="/logo.jpg"
+                  alt="Escudo FEDA Ajedrez"
+                  className="w-full h-full object-contain"
+                />
+              </div>
+              <div>
+                <h1 className="text-lg font-black tracking-wider text-amber-400 leading-tight">
+                  CHESS+ ESPAÑA
+                </h1>
+                <p className="text-[10px] text-slate-400 font-medium">Plataforma Oficial de Torneos</p>
+              </div>
             </div>
-            <div className="flex gap-2">
+
+            <div className="flex gap-2 flex-wrap justify-end">
               <button
-                onClick={() => setMostrarModalNuevo(true)}
-                className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1.5 rounded-lg transition"
+                onClick={() => setMostrarSelectorJugador(true)}
+                className="text-xs bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-3 py-1.5 rounded-lg transition shadow-md"
               >
-                + Publicar Torneo
+                👤 ¿Quién eres?
               </button>
               <button
-                onClick={() => setEditandoPerfil(!editandoPerfil)}
-                className="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700"
+                onClick={() => setMostrarModalNuevo(true)}
+                className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1.5 rounded-lg transition shadow-md"
               >
-                {editandoPerfil ? "Cerrar" : "Editar mi Carnet / ELO"}
+                + Publicar Torneo
               </button>
             </div>
           </div>
 
-          {editandoPerfil ? (
-            <form onSubmit={guardarElosManuales} className="bg-slate-900 p-4 rounded-xl border border-amber-500/40 space-y-3 mb-2">
-              <p className="text-xs text-amber-400 font-bold">Verificar FIDE o ajustar tus ELOs manualmente:</p>
-              <div className="flex gap-2">
-                <input
-                  className="flex-1 bg-slate-800 p-2 rounded text-sm border border-slate-700"
-                  placeholder="Código FIDE"
-                  value={inputFideId}
-                  onChange={(e) => setInputFideId(e.target.value)}
-                />
-                <button
-                  type="button"
-                  onClick={vincularFideId}
-                  disabled={buscandoFide}
-                  className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-3 py-2 rounded text-xs"
-                >
-                  {buscandoFide ? "Buscando..." : "Buscar FIDE"}
-                </button>
-              </div>
-
-              <input
-                className="w-full bg-slate-800 p-2 rounded text-sm border border-slate-700"
-                placeholder="Nombre completo"
-                value={jugador.nombre}
-                onChange={(e) => setJugador({ ...jugador, nombre: e.target.value })}
-                required
-              />
-
-              <div className="grid grid-cols-3 gap-2">
-                <div>
-                  <label className="text-[10px] text-slate-400">ELO Standard</label>
-                  <input
-                    type="number"
-                    className="w-full bg-slate-800 p-2 rounded text-sm border border-slate-700 font-bold text-amber-400"
-                    value={jugador.eloStd}
-                    onChange={(e) => setJugador({ ...jugador, eloStd: parseInt(e.target.value) || 0 })}
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] text-slate-400">ELO Rapid</label>
-                  <input
-                    type="number"
-                    className="w-full bg-slate-800 p-2 rounded text-sm border border-slate-700 font-bold text-sky-400"
-                    value={jugador.eloRapid}
-                    onChange={(e) => setJugador({ ...jugador, eloRapid: parseInt(e.target.value) || 0 })}
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] text-slate-400">ELO Blitz</label>
-                  <input
-                    type="number"
-                    className="w-full bg-slate-800 p-2 rounded text-sm border border-slate-700 font-bold text-rose-400"
-                    value={jugador.eloBlitz}
-                    onChange={(e) => setJugador({ ...jugador, eloBlitz: parseInt(e.target.value) || 0 })}
-                  />
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded text-xs"
-              >
-                Guardar Carnet FIDE
-              </button>
-            </form>
-          ) : (
-            <div className="bg-slate-900/90 p-4 rounded-xl border border-slate-800 flex justify-between items-center">
-              <div>
-                <span className="text-[10px] uppercase tracking-widest text-emerald-400 font-bold">
-                  ● FIDE Oficial Verificado
-                </span>
-                <p className="font-bold text-lg text-white">{jugador.nombre}</p>
-                <p className="text-xs text-slate-400 font-mono">FIDE ID: {jugador.fideId}</p>
-              </div>
-              <div className="flex gap-2 text-center">
-                <div className="bg-slate-950 px-2.5 py-1.5 rounded-lg border border-slate-800">
-                  <p className="text-[10px] text-slate-400">STD</p>
-                  <p className="font-bold text-amber-400">{jugador.eloStd || 0}</p>
-                </div>
-                <div className="bg-slate-950 px-2.5 py-1.5 rounded-lg border border-slate-800">
-                  <p className="text-[10px] text-slate-400">RAPID</p>
-                  <p className="font-bold text-sky-400">{jugador.eloRapid || 0}</p>
-                </div>
-                <div className="bg-slate-950 px-2.5 py-1.5 rounded-lg border border-slate-800">
-                  <p className="text-[10px] text-slate-400">BLITZ</p>
-                  <p className="font-bold text-rose-400">{jugador.eloBlitz || 0}</p>
-                </div>
-              </div>
+          {/* TARJETA CON ÚNICAMENTE EL ELO PORTUGALUJO */}
+          <div className="bg-slate-900/90 p-4 rounded-xl border border-slate-800 flex justify-between items-center">
+            <div>
+              <span className="text-[10px] uppercase tracking-widest text-emerald-400 font-bold">
+                ● Jugador Activo
+              </span>
+              <p className="font-bold text-lg text-white">{jugador.nombre}</p>
+              <p className="text-xs text-slate-400 font-mono">ID: {jugador.fideId}</p>
             </div>
-          )}
+            <div className="bg-slate-950 px-4 py-2 rounded-xl border border-amber-500/30 text-center shadow-inner">
+              <p className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">
+                ELO Portugalujo
+              </p>
+              <p className="font-black text-xl text-amber-400">
+                {jugador.eloPortugalujo || 0}
+              </p>
+            </div>
+          </div>
         </div>
       </header>
+
+      {/* MODAL SELECTOR "¿QUIÉN ERES?" DESDE EL CSV */}
+      {mostrarSelectorJugador && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+          <div className="bg-slate-900 border border-amber-500/40 p-6 rounded-2xl max-w-md w-full space-y-4 shadow-2xl">
+            <div className="flex justify-between items-center">
+              <h2 className="text-lg font-bold text-amber-400">👤 ¿Quién eres?</h2>
+              <button
+                onClick={() => setMostrarSelectorJugador(false)}
+                className="text-xs text-slate-400 hover:text-white"
+              >
+                ✕ Cerrar
+              </button>
+            </div>
+            <p className="text-xs text-slate-300">
+              Busca tu nombre en el listado oficial para cargar tu ELO Portugalujo automáticamente y poder anotarte a los torneos:
+            </p>
+
+            <input
+              type="text"
+              placeholder="🔍 Escribe tu nombre o apellido..."
+              value={busquedaJugadorCSV}
+              onChange={(e) => setBusquedaJugadorCSV(e.target.value)}
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-amber-400"
+              autoFocus
+            />
+
+            <div className="max-h-64 overflow-y-auto space-y-1.5 pr-1">
+              {listaJugadoresCSV.length === 0 ? (
+                <p className="text-xs text-amber-400/80 py-4 text-center">
+                  No se encontró el archivo <b>public/jugadores.csv</b> o está vacío. Asegúrate de guardarlo en la carpeta <b>public</b> con el nombre <b>jugadores.csv</b>.
+                </p>
+              ) : jugadoresCSVFiltrados.length === 0 ? (
+                <p className="text-xs text-slate-500 py-4 text-center">
+                  No hay jugadores que coincidan con tu búsqueda.
+                </p>
+              ) : (
+                jugadoresCSVFiltrados.map((jug, i) => (
+                  <button
+                    key={i}
+                    onClick={() => elegirJugadorDeLista(jug)}
+                    className="w-full text-left bg-slate-950 hover:bg-indigo-950/60 border border-slate-800 hover:border-amber-500/40 p-3 rounded-xl flex justify-between items-center transition"
+                  >
+                    <div>
+                      <p className="font-bold text-sm text-white">{jug.nombre}</p>
+                      <p className="text-[10px] text-slate-400 font-mono">ID: {jug.fideId}</p>
+                    </div>
+                    <span className="bg-amber-500/10 text-amber-400 border border-amber-500/30 font-mono font-bold text-xs px-2.5 py-1 rounded-lg">
+                      ELO {jug.eloPortugalujo}
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL NUEVO TORNEO */}
       {mostrarModalNuevo && (
@@ -581,7 +630,7 @@ export default function Home() {
                             <div key={idx} className="flex justify-between items-center text-xs border-b border-slate-900 pb-1">
                               <div>
                                 <span className="font-bold text-slate-200">{ins.jugador_nombre}</span>
-                                <span className="text-slate-500 ml-2 font-mono">FIDE ID: {ins.fide_id}</span>
+                                <span className="text-slate-500 ml-2 font-mono">ID: {ins.fide_id}</span>
                               </div>
                               <span className="text-amber-400 font-mono">ELO: {ins.elo}</span>
                             </div>
@@ -599,7 +648,7 @@ export default function Home() {
                         : "bg-amber-500 hover:bg-amber-400 text-slate-950"
                     }`}
                   >
-                    {estaInscrito ? "✓ Inscrito (Haz clic para cancelar)" : "Anótate en 1-Clic"}
+                    {estaInscrito ? "✓ Inscrito (Haz clic para cancelar)" : `Anótate en 1-Clic como ${jugador.nombre.split(" ")[0]}`}
                   </button>
                 </div>
               );
